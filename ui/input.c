@@ -5,6 +5,7 @@
 #include "trace.h"
 #include "ui/input.h"
 #include "ui/console.h"
+#include "replay/replay.h"
 
 struct QemuInputHandlerState {
     DeviceState       *dev;
@@ -258,13 +259,9 @@ static void qemu_input_queue_sync(struct QemuInputEventQueueHead *queue)
     QTAILQ_INSERT_TAIL(queue, item, node);
 }
 
-void qemu_input_event_send(QemuConsole *src, InputEvent *evt)
+void qemu_input_event_send_impl(QemuConsole *src, InputEvent *evt)
 {
     QemuInputHandlerState *s;
-
-    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
-        return;
-    }
 
     qemu_input_event_trace(src, evt);
 
@@ -282,13 +279,24 @@ void qemu_input_event_send(QemuConsole *src, InputEvent *evt)
     s->events++;
 }
 
-void qemu_input_event_sync(void)
+void qemu_input_event_send(QemuConsole *src, InputEvent *evt)
 {
-    QemuInputHandlerState *s;
-
     if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
         return;
     }
+
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        /* Nothing */
+    } else if (replay_mode == REPLAY_MODE_RECORD) {
+        replay_add_input_event(evt);
+    } else {
+        qemu_input_event_send_impl(src, evt);
+    }
+}
+
+void qemu_input_event_sync_impl(void)
+{
+    QemuInputHandlerState *s;
 
     trace_input_event_sync();
 
@@ -300,6 +308,21 @@ void qemu_input_event_sync(void)
             s->handler->sync(s->dev);
         }
         s->events = 0;
+    }
+}
+
+void qemu_input_event_sync(void)
+{
+    if (!runstate_is_running() && !runstate_check(RUN_STATE_SUSPENDED)) {
+        return;
+    }
+
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        /* Nothing */
+    } else if (replay_mode == REPLAY_MODE_RECORD) {
+        replay_add_input_sync_event();
+    } else {
+        qemu_input_event_sync_impl();
     }
 }
 
@@ -316,14 +339,23 @@ InputEvent *qemu_input_event_new_key(KeyValue *key, bool down)
 void qemu_input_event_send_key(QemuConsole *src, KeyValue *key, bool down)
 {
     InputEvent *evt;
-    evt = qemu_input_event_new_key(key, down);
-    if (QTAILQ_EMPTY(&kbd_queue)) {
-        qemu_input_event_send(src, evt);
-        qemu_input_event_sync();
-        qapi_free_InputEvent(evt);
-    } else {
-        qemu_input_queue_event(&kbd_queue, src, evt);
-        qemu_input_queue_sync(&kbd_queue);
+    if (replay_mode != REPLAY_MODE_PLAY) {
+        evt = qemu_input_event_new_key(key, down);
+        if (QTAILQ_EMPTY(&kbd_queue)) {
+            qemu_input_event_send(src, evt);
+            qemu_input_event_sync();
+            if (replay_mode != REPLAY_MODE_RECORD) {
+                qapi_free_InputEvent(evt);
+            }
+        } else {
+            if (replay_mode != REPLAY_MODE_NONE) {
+                fprintf(stderr, "Input queue is not supported "
+                                "in record/replay mode\n");
+                exit(1);
+            }
+            qemu_input_queue_event(&kbd_queue, src, evt);
+            qemu_input_queue_sync(&kbd_queue);
+        }
     }
 }
 
@@ -349,6 +381,10 @@ void qemu_input_event_send_key_delay(uint32_t delay_ms)
         kbd_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, qemu_input_queue_process,
                                  &kbd_queue);
     }
+    if (replay_mode != REPLAY_MODE_NONE) {
+        fprintf(stderr, "Input queue is not supported in record/replay mode\n");
+        exit(1);
+    }
     qemu_input_queue_delay(&kbd_queue, kbd_timer,
                            delay_ms ? delay_ms : kbd_default_delay_ms);
 }
@@ -368,7 +404,9 @@ void qemu_input_queue_btn(QemuConsole *src, InputButton btn, bool down)
     InputEvent *evt;
     evt = qemu_input_event_new_btn(btn, down);
     qemu_input_event_send(src, evt);
-    qapi_free_InputEvent(evt);
+    if (replay_mode != REPLAY_MODE_RECORD) {
+        qapi_free_InputEvent(evt);
+    }
 }
 
 void qemu_input_update_buttons(QemuConsole *src, uint32_t *button_map,
@@ -421,7 +459,9 @@ void qemu_input_queue_rel(QemuConsole *src, InputAxis axis, int value)
     InputEvent *evt;
     evt = qemu_input_event_new_move(INPUT_EVENT_KIND_REL, axis, value);
     qemu_input_event_send(src, evt);
-    qapi_free_InputEvent(evt);
+    if (replay_mode != REPLAY_MODE_RECORD) {
+        qapi_free_InputEvent(evt);
+    }
 }
 
 void qemu_input_queue_abs(QemuConsole *src, InputAxis axis, int value, int size)
@@ -430,7 +470,9 @@ void qemu_input_queue_abs(QemuConsole *src, InputAxis axis, int value, int size)
     int scaled = qemu_input_scale_axis(value, size, INPUT_EVENT_ABS_SIZE);
     evt = qemu_input_event_new_move(INPUT_EVENT_KIND_ABS, axis, scaled);
     qemu_input_event_send(src, evt);
-    qapi_free_InputEvent(evt);
+    if (replay_mode != REPLAY_MODE_RECORD) {
+        qapi_free_InputEvent(evt);
+    }
 }
 
 void qemu_input_check_mode_change(void)
