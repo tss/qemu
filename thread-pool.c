@@ -24,6 +24,7 @@
 #include "qemu/event_notifier.h"
 #include "block/thread-pool.h"
 #include "qemu/main-loop.h"
+#include "replay/replay.h"
 
 static void do_spawn_thread(ThreadPool *pool);
 
@@ -79,6 +80,30 @@ struct ThreadPool {
     bool stopping;
 };
 
+void thread_pool_work(ThreadPool *pool, void *r)
+{
+    ThreadPoolElement *req = (ThreadPoolElement *)r;
+    int ret;
+    if (replay_mode == REPLAY_MODE_NONE) {
+        qemu_mutex_unlock(&pool->lock);
+    }
+
+    ret = req->func(req->arg);
+    req->ret = ret;
+    /* Write ret before state.  */
+    smp_wmb();
+    req->state = THREAD_DONE;
+
+    if (replay_mode == REPLAY_MODE_NONE) {
+        qemu_mutex_lock(&pool->lock);
+    }
+    if (pool->pending_cancellations) {
+        qemu_cond_broadcast(&pool->check_cancel);
+    }
+
+    event_notifier_set(&pool->notifier);
+}
+
 static void *worker_thread(void *opaque)
 {
     ThreadPool *pool = opaque;
@@ -105,21 +130,12 @@ static void *worker_thread(void *opaque)
         req = QTAILQ_FIRST(&pool->request_list);
         QTAILQ_REMOVE(&pool->request_list, req, reqs);
         req->state = THREAD_ACTIVE;
-        qemu_mutex_unlock(&pool->lock);
 
-        ret = req->func(req->arg);
-
-        req->ret = ret;
-        /* Write ret before state.  */
-        smp_wmb();
-        req->state = THREAD_DONE;
-
-        qemu_mutex_lock(&pool->lock);
-        if (pool->pending_cancellations) {
-            qemu_cond_broadcast(&pool->check_cancel);
+        if (replay_mode != REPLAY_MODE_NONE && req->common.replay) {
+            replay_add_thread_event(pool, req, req->common.replay_step);
+        } else {
+            thread_pool_work(pool, req);
         }
-
-        event_notifier_set(&pool->notifier);
     }
 
     pool->cur_threads--;
@@ -234,7 +250,8 @@ static const AIOCBInfo thread_pool_aiocb_info = {
 
 BlockDriverAIOCB *thread_pool_submit_aio(ThreadPool *pool,
         ThreadPoolFunc *func, void *arg,
-        BlockDriverCompletionFunc *cb, void *opaque)
+        BlockDriverCompletionFunc *cb, void *opaque,
+        bool replay, uint64_t replay_step)
 {
     ThreadPoolElement *req;
 
@@ -243,6 +260,8 @@ BlockDriverAIOCB *thread_pool_submit_aio(ThreadPool *pool,
     req->arg = arg;
     req->state = THREAD_QUEUED;
     req->pool = pool;
+    req->common.replay = replay;
+    req->common.replay_step = replay_step;
 
     QLIST_INSERT_HEAD(&pool->head, req, all);
 
@@ -253,8 +272,8 @@ BlockDriverAIOCB *thread_pool_submit_aio(ThreadPool *pool,
         spawn_thread(pool);
     }
     QTAILQ_INSERT_TAIL(&pool->request_list, req, reqs);
-    qemu_mutex_unlock(&pool->lock);
     qemu_sem_post(&pool->sem);
+    qemu_mutex_unlock(&pool->lock);
     return &req->common;
 }
 
@@ -276,14 +295,14 @@ int coroutine_fn thread_pool_submit_co(ThreadPool *pool, ThreadPoolFunc *func,
 {
     ThreadPoolCo tpc = { .co = qemu_coroutine_self(), .ret = -EINPROGRESS };
     assert(qemu_in_coroutine());
-    thread_pool_submit_aio(pool, func, arg, thread_pool_co_cb, &tpc);
+    thread_pool_submit_aio(pool, func, arg, thread_pool_co_cb, &tpc, false, 0);
     qemu_coroutine_yield();
     return tpc.ret;
 }
 
 void thread_pool_submit(ThreadPool *pool, ThreadPoolFunc *func, void *arg)
 {
-    thread_pool_submit_aio(pool, func, arg, NULL, NULL);
+    thread_pool_submit_aio(pool, func, arg, NULL, NULL, false, 0);
 }
 
 static void thread_pool_init_one(ThreadPool *pool, AioContext *ctx)
