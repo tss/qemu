@@ -1815,6 +1815,20 @@ Stops replaying at the specified @var{step}.
 
 ETEXI
 
+    {
+        .name       = "replay_seek",
+        .args_type  = "step:l",
+        .params     = "step",
+        .help       = "seeks the replay log to the specified step",
+        .mhandler.cmd = do_replay_seek,
+    },
+
+STEXI
+@item replay_seek @var{step}
+Seeks the replay log to the specified @var{step}.
+
+ETEXI
+
 STEXI
 @end table
 ETEXI
