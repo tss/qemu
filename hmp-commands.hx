@@ -1801,6 +1801,20 @@ STEXI
 Shows information about replay process.
 ETEXI
 
+    {
+        .name       = "replay_break",
+        .args_type  = "step:l",
+        .params     = "step",
+        .help       = "stop replaying at the specified replay step",
+        .mhandler.cmd = do_replay_break,
+    },
+
+STEXI
+@item replay_break @var{step}
+Stops replaying at the specified @var{step}.
+
+ETEXI
+
 STEXI
 @end table
 ETEXI
