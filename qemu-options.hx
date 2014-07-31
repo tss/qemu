@@ -3348,6 +3348,35 @@ Dump json-encoded vmstate information for current machine type to file
 in @var{file}
 ETEXI
 
+DEF("record", HAS_ARG, QEMU_OPTION_record,
+    "-record fname=<filename>[,suffix=<suffix>,snapshot=<on/off>,icount=<icount>]\n"
+    "                writes replay file for latter replaying\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -record fname=@var{file}[,suffix=@var{suffix},snapshot=@var{snapshot},icount=@var{icount}]
+Writes compact execution trace into @var{file}.
+Changes for disk images are written
+into separate files with @var{suffix} added. If no @var{suffix} is
+specified, "replay_qcow" is used as suffix.
+If @var{snapshot} parameter is set as off, then original disk image will be
+modified. Default value is on.
+@var{icount} parameter is used for vm clock emulation.
+ETEXI
+
+DEF("replay", HAS_ARG, QEMU_OPTION_replay,
+    "-replay fname=<filename>[,suffix=<suffix>,snapshot=<on/off>,icount=<icount>]\n"
+    "                plays saved replay file\n", QEMU_ARCH_ALL)
+STEXI
+@item -replay fname=@var{filename}[,suffix=@var{suffix},snapshot=@var{snapshot},icount=@var{icount}]
+Plays compact execution trace from @var{filename}.
+Changes for disk images and VM states are read
+from separate files with @var{suffix} added. If no @var{suffix} is
+specified, "replay_qcow" is used as suffix.
+If @var{snapshot} parameter is set as off, then original disk image will be
+modified. Default value is on.
+@var{icount} parameter is used for vm clock emulation.
+ETEXI
+
 HXCOMM This is the last statement. Insert new options before this line!
 STEXI
 @end table

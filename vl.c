@@ -538,6 +538,48 @@ static QemuOptsList qemu_mem_opts = {
     },
 };
 
+static QemuOptsList qemu_record_opts = {
+    .name = "record",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_record_opts.head),
+    .desc = {
+        {
+            .name = "fname",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "suffix",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "snapshot",
+            .type = QEMU_OPT_BOOL,
+        },{
+            .name = "icount",
+            .type = QEMU_OPT_NUMBER,
+        },
+        { /* end of list */ }
+    },
+};
+
+static QemuOptsList qemu_replay_opts = {
+    .name = "replay",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_replay_opts.head),
+    .desc = {
+        {
+            .name = "fname",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "suffix",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "snapshot",
+            .type = QEMU_OPT_BOOL,
+        },{
+            .name = "icount",
+            .type = QEMU_OPT_NUMBER,
+        },
+        { /* end of list */ }
+    },
+};
+
 /**
  * Get machine options
  *
@@ -2925,7 +2967,8 @@ out:
 int main(int argc, char **argv, char **envp)
 {
     int i;
-    int snapshot, linux_boot;
+    int snapshot, linux_boot, replay_snapshot;
+    int not_compatible_replay_param = 0;
     const char *icount_option = NULL;
     const char *initrd_filename;
     const char *kernel_filename, *kernel_cmdline;
@@ -2997,6 +3040,8 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_msg_opts);
     qemu_add_opts(&qemu_name_opts);
     qemu_add_opts(&qemu_numa_opts);
+    qemu_add_opts(&qemu_replay_opts);
+    qemu_add_opts(&qemu_record_opts);
 
     runstate_init();
 
@@ -3010,6 +3055,7 @@ int main(int argc, char **argv, char **envp)
     cpu_model = NULL;
     ram_size = default_ram_size;
     snapshot = 0;
+    replay_snapshot = 1;
     cyls = heads = secs = 0;
     translation = BIOS_ATA_TRANSLATION_AUTO;
 
@@ -3127,6 +3173,7 @@ int main(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_pflash:
                 drive_add(IF_PFLASH, -1, optarg, PFLASH_OPTS);
+                not_compatible_replay_param++;
                 break;
             case QEMU_OPTION_snapshot:
                 snapshot = 1;
@@ -3283,6 +3330,7 @@ int main(int argc, char **argv, char **envp)
 #endif
             case QEMU_OPTION_bt:
                 add_device_config(DEV_BT, optarg);
+                not_compatible_replay_param++;
                 break;
             case QEMU_OPTION_audio_help:
                 AUD_help ();
@@ -3497,6 +3545,7 @@ int main(int argc, char **argv, char **envp)
                 if (!opts) {
                     exit(1);
                 }
+                not_compatible_replay_param++;
                 break;
             case QEMU_OPTION_fsdev:
                 olist = qemu_find_opts("fsdev");
@@ -3625,6 +3674,7 @@ int main(int argc, char **argv, char **envp)
                 if (strncmp(optarg, "mon:", 4) == 0) {
                     default_monitor = 0;
                 }
+                not_compatible_replay_param++;
                 break;
             case QEMU_OPTION_debugcon:
                 add_device_config(DEV_DEBUGCON, optarg);
@@ -3745,6 +3795,7 @@ int main(int argc, char **argv, char **envp)
                 if (!qemu_opts_parse(qemu_find_opts("smp-opts"), optarg, 1)) {
                     exit(1);
                 }
+                not_compatible_replay_param++;
                 break;
 	    case QEMU_OPTION_vnc:
 #ifdef CONFIG_VNC
@@ -3979,6 +4030,24 @@ int main(int argc, char **argv, char **envp)
                     exit(1);
                 }
                 break;
+            case QEMU_OPTION_record:
+                opts = qemu_opts_parse(qemu_find_opts("record"), optarg, 0);
+                if (!opts) {
+                    fprintf(stderr, "Invalid record options: %s\n", optarg);
+                    exit(1);
+                }
+                replay_configure(opts, REPLAY_MODE_RECORD);
+                replay_snapshot = qemu_opt_get_bool(opts, "snapshot", 1);
+                break;
+            case QEMU_OPTION_replay:
+                opts = qemu_opts_parse(qemu_find_opts("replay"), optarg, 0);
+                if (!opts) {
+                    fprintf(stderr, "Invalid replay options: %s\n", optarg);
+                    exit(1);
+                }
+                replay_configure(opts, REPLAY_MODE_PLAY);
+                replay_snapshot = qemu_opt_get_bool(opts, "snapshot", 1);
+                break;
             default:
                 os_parse_cmd_args(popt->index, optarg);
             }
@@ -3990,6 +4059,12 @@ int main(int argc, char **argv, char **envp)
 
     if (qemu_init_main_loop()) {
         fprintf(stderr, "qemu_init_main_loop failed\n");
+        exit(1);
+    }
+
+    if (not_compatible_replay_param && (replay_mode != REPLAY_MODE_NONE)) {
+        fprintf(stderr, "options -smp, -pflash, -chardev, -bt, -parallel "
+                        "are not compatible with record/replay\n");
         exit(1);
     }
 
@@ -4359,7 +4434,7 @@ int main(int argc, char **argv, char **envp)
     ram_mig_init();
 
     /* open the virtual block devices */
-    if (snapshot)
+    if (snapshot || (replay_mode != REPLAY_MODE_NONE && replay_snapshot))
         qemu_opts_foreach(qemu_find_opts("drive"), drive_enable_snapshot, NULL, 0);
     if (qemu_opts_foreach(qemu_find_opts("drive"), drive_init_func,
                           &machine_class->block_default_type, 1) != 0) {
