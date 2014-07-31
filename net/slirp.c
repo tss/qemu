@@ -36,6 +36,7 @@
 #include "qemu/sockets.h"
 #include "slirp/libslirp.h"
 #include "sysemu/char.h"
+#include "replay/replay.h"
 
 static int get_str_sep(char *buf, int buf_size, const char **pp, int sep)
 {
@@ -103,7 +104,11 @@ void slirp_output(void *opaque, const uint8_t *pkt, int pkt_len)
 {
     SlirpState *s = opaque;
 
-    qemu_send_packet(&s->nc, pkt, pkt_len);
+    if (replay_mode == REPLAY_MODE_RECORD) {
+        replay_save_net_packet(&s->nc, pkt, pkt_len);
+    } else {
+        qemu_send_packet(&s->nc, pkt, pkt_len);
+    }
 }
 
 static ssize_t net_slirp_receive(NetClientState *nc, const uint8_t *buf, size_t size)
@@ -266,6 +271,13 @@ static int net_slirp_init(NetClientState *peer, const char *model,
             goto error;
     }
 #endif
+
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        fprintf(stderr, "-net user is not permitted in replay mode\n");
+        exit(1);
+    } else {
+        replay_add_network_client(nc);
+    }
 
     return 0;
 

@@ -32,6 +32,7 @@
 #include "qemu/sockets.h"
 #include "qemu/iov.h"
 #include "qemu/main-loop.h"
+#include "replay/replay.h"
 
 typedef struct NetSocketState {
     NetClientState nc;
@@ -211,7 +212,11 @@ static void net_socket_send(void *opaque)
             buf += l;
             size -= l;
             if (s->index >= s->packet_len) {
-                qemu_send_packet(&s->nc, s->buf, s->packet_len);
+                if (replay_mode == REPLAY_MODE_RECORD) {
+                    replay_save_net_packet(&s->nc, s->buf, s->packet_len);
+                } else {
+                    qemu_send_packet(&s->nc, s->buf, s->packet_len);
+                }
                 s->index = 0;
                 s->state = 0;
             }
@@ -234,7 +239,11 @@ static void net_socket_send_dgram(void *opaque)
         net_socket_write_poll(s, false);
         return;
     }
-    qemu_send_packet(&s->nc, s->buf, size);
+    if (replay_mode == REPLAY_MODE_RECORD) {
+        replay_save_net_packet(&s->nc, s->buf, size);
+    } else {
+        qemu_send_packet(&s->nc, s->buf, size);
+    }
 }
 
 static int net_socket_mcast_create(struct sockaddr_in *mcastaddr, struct in_addr *localaddr)
@@ -406,6 +415,13 @@ static NetSocketState *net_socket_fd_init_dgram(NetClientState *peer,
         s->dgram_dst = saddr;
     }
 
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        fprintf(stderr, "-net socket is not permitted in replay mode\n");
+        exit(1);
+    } else {
+        replay_add_network_client(nc);
+    }
+
     return s;
 
 err:
@@ -452,6 +468,14 @@ static NetSocketState *net_socket_fd_init_stream(NetClientState *peer,
     } else {
         qemu_set_fd_handler(s->fd, NULL, net_socket_connect, s);
     }
+
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        printf("-net socket is not permitted in replay mode\n");
+        exit(1);
+    } else {
+        replay_add_network_client(nc);
+    }
+
     return s;
 }
 
@@ -547,6 +571,13 @@ static int net_socket_listen_init(NetClientState *peer,
     s->fd = -1;
     s->listen_fd = fd;
     s->nc.link_down = true;
+
+    if (replay_mode == REPLAY_MODE_PLAY) {
+        printf("-net socket is not permitted in replay mode\n");
+        exit(1);
+    } else {
+        replay_add_network_client(nc);
+    }
 
     qemu_set_fd_handler(s->listen_fd, net_socket_accept, NULL, s);
     return 0;
